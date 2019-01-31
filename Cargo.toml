@@ -1,0 +1,11 @@
+[package]
+name = "ptracer"
+version = "0.1.0"
+authors = ["Bostjan Vesnicer"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2.47"
+
+[features]
+#my_debug = []
