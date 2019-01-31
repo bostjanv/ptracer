@@ -1,8 +1,12 @@
 [package]
 name = "ptracer"
 version = "0.1.0"
-authors = ["Bostjan Vesnicer"]
+authors = ["Bostjan Vesnicer <bostjan.vesnicer@gmail.com>"]
 edition = "2018"
+description = "Debugger library"
+readme = "README.md"
+repository = "https://github.com/bostjanv/ptracer"
+license = "MIT"
 
 [dependencies]
 libc = "0.2.47"
