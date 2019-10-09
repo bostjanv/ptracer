@@ -1,4 +1,3 @@
-use libc::c_void;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
@@ -20,11 +19,6 @@ pub fn read_string(pid: i32, address: u64, count: usize) -> String {
     String::from_utf8(data).unwrap()
 }
 
-pub fn kill(pid: i32, signo: i32) {
-    let result = unsafe { libc::kill(pid, signo) };
-    assert_eq!(result, 0);
-}
-
 pub fn read_data(pid: i32, address: u64, data: &mut [u8]) -> isize {
     let local_iov = libc::iovec {
         iov_base: data.as_mut_ptr() as *mut c_void,
@@ -39,7 +33,7 @@ pub fn read_data(pid: i32, address: u64, data: &mut [u8]) -> isize {
     unsafe { libc::process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0) }
 }
 
-pub fn show_registers(regs: &libc::user_regs_struct) {
+pub fn show_registers(regs: &nix::libc::user_regs_struct) {
     println!(
         "R15      {:016x}    R14     {:016x}    R13    {:016x}",
         regs.r15, regs.r14, regs.r13
@@ -86,7 +80,7 @@ pub struct MemoryMap {
     pub path: String,
 }
 
-pub fn read_memory_maps(pid: libc::pid_t) -> Vec<MemoryMap> {
+pub fn read_memory_maps(pid: Pid) -> Vec<MemoryMap> {
     let path = format!("/proc/{}/maps", pid);
     let mut maps = Vec::new();
 
