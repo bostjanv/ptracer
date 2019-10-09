@@ -260,15 +260,15 @@ impl Ptracer {
                             self.registers.rip = pc as u64;
 
                             remove_breakpoint(pid, bp.address, bp.data)?;
+                            /*
+                            TODO: only set RIP
+                            ptrace::write(
+                                pid,
+                                nix::libc::RIP as *mut c_void,
+                                pc as *mut c_void,
+                            )?;
+                            */
                             ptrace::setregs(pid, self.registers)?;
-                        /*
-                        TODO: only set RIP
-                        ptrace::write(
-                            pid,
-                            nix::libc::RIP as *mut c_void,
-                            pc as *mut c_void,
-                        )?;
-                        */
                         } else {
                             debug!(
                                 "??? breakpoint not found (pc = {:#016x?})",
@@ -427,16 +427,6 @@ enum PtraceRequest {
     Cont,
     Step,
     Syscall,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TraceeState {
-    Exited(i32),
-    Stopped(Signal),
-    Signaled(Signal),
-    PtraceEvent(Signal, ptrace::Event),
-    PtraceSyscall,
-    Continued,
 }
 
 #[derive(Debug)]
