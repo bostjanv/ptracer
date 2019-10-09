@@ -122,19 +122,13 @@ impl Ptracer {
     }
 
     fn cont_aux(&mut self, how: ContinueMode, ptrace_request: PtraceRequest) -> nix::Result<bool> {
-        let event = self.event();
-
-        let mut is_stopped = match event {
-            WaitStatus::Stopped(_, _) | WaitStatus::PtraceEvent(_, _, _) | WaitStatus::PtraceSyscall(_) => true,
-            _ => false
-        };
-
-        let is_stopped = match self.event() {
-            // WaitStatus::Exited(_, _) => false,
-            // WaitStatus::Signaled(_, signal, _) => false,
+        let event = self.event;
+        let is_stopped = match event {
+            WaitStatus::Exited(_, _) => false,
+            WaitStatus::Signaled(_, _, _) => false,
             WaitStatus::Stopped(_, signal) => {
                 let mut is_stopped = true;
-                if *signal == Signal::SIGTRAP {
+                if signal == Signal::SIGTRAP {
                     let pc = self.registers.rip as ptrace::AddressType;
                     let pid = event.pid().unwrap();
 
@@ -142,7 +136,7 @@ impl Ptracer {
                         if bp.enabled {
                             // Reinsert breakpoint
                             debug!("Single stepping @ {:#016x?} (PID={})", pc, pid);
-                            ptrace::step(pid, None);
+                            ptrace::step(pid, None)?;
                             is_stopped = false;
 
                             let thread_state = self.threads.get_mut(&pid).unwrap();
@@ -153,11 +147,10 @@ impl Ptracer {
 
                 is_stopped
             },
-            WaitStatus::PtraceEvent(_, signal, _) => true,
+            WaitStatus::PtraceEvent(_, _, _) => true,
             WaitStatus::PtraceSyscall(_) => true,
-            // WaitStatus::Continued(_) => false,
-            // WaitStatus::StillAlive => false
-            _ => false
+            WaitStatus::Continued(_) => false,
+            WaitStatus::StillAlive => false
         };
 
         if is_stopped {
@@ -167,9 +160,9 @@ impl Ptracer {
                 ContinueMode::WithSignal(signal) => Some(signal),
                 ContinueMode::Default => {
                     let signal = match event {
-                        WaitStatus::Signaled(_, signal, _) => Some(*signal),
-                        WaitStatus::Stopped(_, signal) => Some(*signal),
-                        WaitStatus::PtraceEvent(_, signal, _) => Some(*signal),
+                        WaitStatus::Signaled(_, signal, _) => Some(signal),
+                        WaitStatus::Stopped(_, signal) => Some(signal),
+                        WaitStatus::PtraceEvent(_, signal, _) => Some(signal),
                         _ => None
                     };
 
@@ -177,7 +170,8 @@ impl Ptracer {
                         Some(signal) => match signal {
                             Signal::SIGTRAP | Signal::SIGSTOP => None,
                             signal => Some(signal)
-                        }
+                        },
+                        None => None
                     }
                 }
             };
@@ -189,133 +183,201 @@ impl Ptracer {
             }
         }
 
-        let event = wait();
+        let event = wait()?;
+        self.event = event;
         debug!("event: {:?}", event);
+        
+        let pid = match event {
+            WaitStatus::StillAlive => return Ok(true),
+            event => event.pid().unwrap()
+        };
 
-        let mut repeat = false;
-
-        if let Ok(event) = &event {
-            match event.tracee_state {
-                TraceeState::Stopped => {
-                    let mut regs = get_general_purpose_registers(event.pid);
-
-                    match event.stop_signal {
-                        StopSignal::Trap => match event.trap_event {
-                            TrapEvent::Clone(cloned_pid) => {
-                                self.threads.insert(cloned_pid, ThreadState::Running);
-                            }
-
-                            TrapEvent::None => {
-                                let thread_state = self.threads.get_mut(&event.pid).unwrap();
-                                match *thread_state {
-                                    ThreadState::SingleStepping(pc) => {
-                                        if let Some(bp) = self.breakpoints.get(&pc) {
-                                            if bp.enabled {
-                                                debug!(
-                                                    "Reinserting breakpoint @ {:#016x?} (PID={})",
-                                                    pc,
-                                                    event.pid
-                                                );
-                                                insert_breakpoint(event.pid, pc);
-                                            }
-                                        } else {
-                                            debug!("??? Breakpoint @ {:#016x?} not found", pc);
-                                            unreachable!();
-                                        }
-
-                                        *thread_state = ThreadState::Running;
-
-                                        if ptrace_request != PtraceRequest::Step {
-                                            repeat = true;
-                                        }
-                                    }
-
-                                    ThreadState::Running => {
-                                        // Breakpoint reached
-                                        if let Some(bp) = self.breakpoints.get(&(regs.rip - 1)) {
-                                            debug!(
-                                                "Removing breakpoint @ {:#016x?} (PID={})",
-                                                bp.address,
-                                                event.pid
-                                            );
-                                            regs.rip -= 1;
-                                            remove_breakpoint(event.pid, bp.address, bp.data);
-                                            set_register(event.pid, Register::RIP, regs.rip);
-                                        } else {
-                                            if event.is_syscall {
-                                                assert_eq!(ptrace_request, PtraceRequest::Syscall);
-                                                *thread_state = ThreadState::InSyscall;
-                                            } else if ptrace_request == PtraceRequest::Cont {
-                                                debug!(
-                                                    "??? breakpoint not found (pc = {:#016x?})",
-                                                    regs.rip
-                                                );
-                                                unreachable!();
-                                            }
-                                        }
-                                    }
-
-                                    ThreadState::InSyscall => {
-                                        *thread_state = ThreadState::Running;
-                                    }
-                                }
-                            }
-
-                            _ => {
-                                debug!("XXX {:?}", event.trap_event);
-                                unreachable!();
-                            }
-                        },
-
-                        StopSignal::Stop
-                        | StopSignal::Term
-                        | StopSignal::Usr1
-                        | StopSignal::Int => {
-                            //debug!("Stop");
-                        }
-
-                        _ => unreachable!(),
-                    }
-
-                    self.registers = regs;
-                }
-
-                TraceeState::Exited => {
-                    debug!("Exited");
-                    self.threads.remove(&event.pid).unwrap();
-                }
-
-                TraceeState::Signaled => {
-                    debug!("Signaled");
-                    self.threads.remove(&event.pid).unwrap();
-                }
-
-                _ => unimplemented!(),
-            }
-        } else {
-            assert_eq!(self.threads.len(), 0);
+        match event {
+            WaitStatus::Stopped(_, _) |
+            WaitStatus::PtraceEvent(_, _, _) |
+            WaitStatus::PtraceSyscall(_) => {
+                self.registers = ptrace::getregs(pid)?;
+            },
+            _ => { }
         }
 
-        self.event = event;
-        repeat
+        match event {
+            WaitStatus::Exited(_, code) => {
+                debug!("Process {} exited with code {}", pid, code);
+                self.threads.remove(&pid).unwrap();
+            },
+            WaitStatus::Signaled(_, signal, _) => {
+                debug!("Process {} exited with signal {}", pid, signal);
+                self.threads.remove(&pid).unwrap();
+            },
+            WaitStatus::Stopped(_, _) => { },
+            WaitStatus::PtraceEvent(_, _, pevent) => {
+                if pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
+                    debug!("Process cloned with pid {}", pid);
+                        self.threads.insert(pid, ThreadState::Running);
+                } else if pevent == 0 {
+                    let thread_state = self.threads.get_mut(&pid).unwrap();
+                    match *thread_state {
+                        ThreadState::SingleStepping(pc) => {
+                            if let Some(bp) = self.breakpoints.get(&pc) {
+                                if bp.enabled {
+                                    debug!(
+                                        "Reinserting breakpoint @ {:#016x?} (PID={})",
+                                        pc,
+                                        pid
+                                    );
+                                    insert_breakpoint(pid, pc)?;
+                                }
+                            } else {
+                                debug!("??? Breakpoint @ {:#016x?} not found", pc);
+                                unreachable!();
+                            }
+
+                            *thread_state = ThreadState::Running;
+
+                            if ptrace_request != PtraceRequest::Step {
+                                return Ok(true);
+                            }
+                        }
+
+                        ThreadState::Running => {
+                            // Breakpoint reached
+                            let pc = (self.registers.rip - 1) as ptrace::AddressType;
+                            if let Some(bp) = self.breakpoints.get(&pc) {
+                                debug!(
+                                    "Removing breakpoint @ {:#016x?} (PID={})",
+                                    bp.address,
+                                    pid
+                                );
+                                self.registers.rip = pc as u64;
+
+                                remove_breakpoint(pid, bp.address, bp.data)?;
+                                // ptrace::setregs(pid, self.registers);
+                                ptrace::write(pid, nix::libc::RIP as *mut c_void, pc as *mut c_void)?;
+                            }
+                        }
+
+                        ThreadState::InSyscall => {
+                            *thread_state = ThreadState::Running;
+                        }
+                    }
+                }
+                else if pevent == ptrace::Event::PTRACE_EVENT_FORK as i32 ||
+                    pevent == ptrace::Event::PTRACE_EVENT_VFORK as i32 ||
+                    pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32 {
+                    debug!("Process (v)forked with pid {}", pid);
+                }
+                else if pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
+                    debug!("Process {} called exec", pid);
+                }
+                else if pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
+                    debug!("Process {} called exit", pid);
+                }
+                else if pevent == ptrace::Event::PTRACE_EVENT_SECCOMP as i32 {
+                    debug!("Process {} triggered seccomp", pid);
+                }
+                else {
+                    debug!("Process {} triggered unknown ptrace event {}", pid, pevent);
+                }
+            },
+            WaitStatus::PtraceSyscall(_) => {
+                assert_eq!(ptrace_request, PtraceRequest::Syscall);
+                let thread_state = self.threads.get_mut(&pid).unwrap();
+                *thread_state = ThreadState::InSyscall;
+            },
+            WaitStatus::Continued(_) => {
+                debug!(
+                    "??? breakpoint not found (pc = {:#016x?})",
+                    self.registers.rip
+                );
+                unreachable!();
+            },
+            WaitStatus::StillAlive => { return Ok(true) },
+        };
+
+        Ok(true)
+
+        /*
+        match event.tracee_state {
+            TraceeState::Stopped => {
+                match event.stop_signal {
+                        TrapEvent::None => {
+                            let thread_state = self.threads.get_mut(&event.pid).unwrap();
+                            match *thread_state {
+                                ThreadState::SingleStepping(pc) => {
+                                    if let Some(bp) = self.breakpoints.get(&pc) {
+                                        if bp.enabled {
+                                            debug!(
+                                                "Reinserting breakpoint @ {:#016x?} (PID={})",
+                                                pc,
+                                                event.pid
+                                            );
+                                            insert_breakpoint(event.pid, pc);
+                                        }
+                                    } else {
+                                        debug!("??? Breakpoint @ {:#016x?} not found", pc);
+                                        unreachable!();
+                                    }
+
+                                    *thread_state = ThreadState::Running;
+
+                                    if ptrace_request != PtraceRequest::Step {
+                                        repeat = true;
+                                    }
+                                }
+
+                                ThreadState::Running => {
+                                    // Breakpoint reached
+                                    if let Some(bp) = self.breakpoints.get(&(regs.rip - 1)) {
+                                        debug!(
+                                            "Removing breakpoint @ {:#016x?} (PID={})",
+                                            bp.address,
+                                            event.pid
+                                        );
+                                        regs.rip -= 1;
+                                        remove_breakpoint(event.pid, bp.address, bp.data);
+                                        set_register(event.pid, Register::RIP, regs.rip);
+                                    } else {
+                                        if event.is_syscall {
+                                            assert_eq!(ptrace_request, PtraceRequest::Syscall);
+                                            *thread_state = ThreadState::InSyscall;
+                                        } else if ptrace_request == PtraceRequest::Cont {
+                                            debug!(
+                                                "??? breakpoint not found (pc = {:#016x?})",
+                                                regs.rip
+                                            );
+                                            unreachable!();
+                                        }
+                                    }
+                                }
+
+                                ThreadState::InSyscall => {
+                                    *thread_state = ThreadState::Running;
+                                }
+                            }
+                        }
+
+                        _ => {
+                            debug!("XXX {:?}", event.trap_event);
+                            unreachable!();
+                        }
+                    },
+                }
+            }
+        }
+        */
     }
 
     pub fn detach(&self) -> nix::Result<()> {
-        // TODO:
-        /*
-        if let Ok(ref event) = self.event {
-            if event.tracee_state == TraceeState::Exited {
-                return;
-            }
-        } else {
-            return;
+        match self.event {
+            WaitStatus::Exited(_, _) => { return Ok(()) }
+            _ => { }
         }
-        */
 
         // Remove breakpoints
         for (address, breakpoint) in &self.breakpoints {
             debug!("Removing breakpoint {:#016x?}", address);
-            remove_breakpoint(self.pid, *address, breakpoint.data);
+            remove_breakpoint(self.pid, *address, breakpoint.data)?;
         }
 
         ptrace::detach(self.pid)
@@ -347,11 +409,11 @@ fn spawn(path: &str, args: &[String]) -> nix::Result<Pid> {
 
     let path = CString::new(path).expect("CString::new failed");
 
-    let args = args
+    let mut args = args
         .iter()
         .map(|x| CString::new(x.as_str()).unwrap())
         .collect::<Vec<_>>();
-    args.insert(0, path);
+    args.insert(0, path.clone());
 
     match fork() {
         Ok(ForkResult::Parent { child, .. }) => Ok(child),

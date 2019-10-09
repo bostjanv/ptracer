@@ -2,6 +2,10 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 
+use crate::Pid;
+
+/*
+TODO:
 pub fn read_string_max_size(pid: i32, address: u64, max_size: usize) -> String {
     let mut data = vec![0u8; max_size];
     read_data(pid, address, &mut data);
@@ -32,6 +36,7 @@ pub fn read_data(pid: i32, address: u64, data: &mut [u8]) -> isize {
 
     unsafe { libc::process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0) }
 }
+*/
 
 pub fn show_registers(regs: &nix::libc::user_regs_struct) {
     println!(
