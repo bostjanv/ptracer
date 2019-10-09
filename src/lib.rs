@@ -257,18 +257,13 @@ impl Ptracer {
 
                         if let Some(bp) = self.breakpoints.get(&pc) {
                             debug!("Removing breakpoint @ {:#016x?} (PID={})", bp.address, pid);
-                            self.registers.rip = pc as u64;
-
                             remove_breakpoint(pid, bp.address, bp.data)?;
-                            /*
-                            TODO: only set RIP
-                            ptrace::write(
-                                pid,
-                                nix::libc::RIP as *mut c_void,
-                                pc as *mut c_void,
-                            )?;
-                            */
-                            ptrace::setregs(pid, self.registers)?;
+
+                            self.registers.rip = pc as u64;
+                            unsafe {
+                                #[allow(deprecated)]
+                                ptrace::ptrace(ptrace::Request::PTRACE_SETREGSET, pid, nix::libc::RIP as *mut c_void, pc as *mut c_void)?;
+                            }
                         } else {
                             debug!(
                                 "??? breakpoint not found (pc = {:#016x?})",
