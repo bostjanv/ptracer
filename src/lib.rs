@@ -12,6 +12,8 @@ use nix::unistd::Pid;
 pub mod util;
 pub use nix::sys::ptrace::{getevent, getregs, getsiginfo, read, setregs, setsiginfo, write};
 
+const ADDR_NO_RANDOMIZE: nix::libc::c_ulong = 0x0040000;
+
 pub struct Ptracer {
     pub pid: Pid,
     pub registers: nix::libc::user_regs_struct,
@@ -352,6 +354,7 @@ impl fmt::Debug for Ptracer {
 }
 
 fn spawn(path: &str, args: &[String]) -> nix::Result<Pid> {
+    use nix::libc::personality;
     use nix::unistd::{execv, fork, ForkResult};
 
     let path = CString::new(path).expect("CString::new failed");
@@ -366,6 +369,9 @@ fn spawn(path: &str, args: &[String]) -> nix::Result<Pid> {
         Ok(ForkResult::Parent { child, .. }) => Ok(child),
         Ok(ForkResult::Child) => {
             ptrace::traceme()?;
+            unsafe {
+                personality(ADDR_NO_RANDOMIZE);
+            }
             execv(&path, &args)?;
             unreachable!();
         }
