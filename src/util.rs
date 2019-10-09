@@ -71,9 +71,9 @@ pub fn show_registers(regs: &nix::libc::user_regs_struct) {
 }
 
 pub struct MemoryMap {
-    pub offset: u64,
-    pub size: u64,
-    pub file_offset: u64,
+    pub offset: usize,
+    pub size: usize,
+    pub file_offset: usize,
     pub perm: String, // TODO: rwx
     pub path: String,
 }
@@ -92,16 +92,16 @@ pub fn read_memory_maps(pid: Pid) -> Vec<MemoryMap> {
         assert!(v.len() == 5 || v.len() == 6);
 
         if v.len() == 6 {
-            let addr: Vec<u64> = v[0]
+            let addr: Vec<usize> = v[0]
                 .split('-')
-                .map(|x| u64::from_str_radix(x, 16).unwrap())
+                .map(|x| usize::from_str_radix(x, 16).unwrap())
                 .collect();
             assert_eq!(addr.len(), 2);
 
             let map = MemoryMap {
                 offset: addr[0],
                 size: addr[1] - addr[0],
-                file_offset: u64::from_str_radix(v[2], 16).unwrap(),
+                file_offset: usize::from_str_radix(v[2], 16).unwrap(),
                 perm: v[1].to_owned(),
                 path: v[5].to_owned(),
             };
