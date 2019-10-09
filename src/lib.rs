@@ -214,7 +214,7 @@ impl Ptracer {
             | WaitStatus::PtraceEvent(_, _, _)
             | WaitStatus::PtraceSyscall(_) => {
                 self.registers = ptrace::getregs(pid)?;
-                trace!("self.registers = {:?}", self.registers);
+                trace!("self.registers = {:#016x?}", self.registers);
             }
             _ => {}
         }
