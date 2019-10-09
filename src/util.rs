@@ -22,14 +22,11 @@ pub fn read_string(pid: Pid, address: usize, count: usize) -> nix::Result<String
 }
 
 pub fn read_data(pid: Pid, address: usize, data: &mut [u8]) -> nix::Result<usize> {
-    use nix::sys::uio::{IoVec, RemoteIoVec, process_vm_readv};
+    use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
 
     let len = data.len();
     let local_iov = IoVec::from_mut_slice(data);
-    let remote_iov = RemoteIoVec {
-        base: address,
-        len,
-    };
+    let remote_iov = RemoteIoVec { base: address, len };
 
     process_vm_readv(pid, &[local_iov], &[remote_iov])
 }
