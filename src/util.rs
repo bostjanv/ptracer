@@ -4,39 +4,35 @@ use std::io::BufReader;
 
 use crate::Pid;
 
-/*
-TODO:
-pub fn read_string_max_size(pid: i32, address: u64, max_size: usize) -> String {
+pub fn read_string_max_size(pid: Pid, address: usize, max_size: usize) -> nix::Result<String> {
     let mut data = vec![0u8; max_size];
-    read_data(pid, address, &mut data);
+    read_data(pid, address, &mut data)?;
     let data = data
         .into_iter()
         .take_while(|x| *x != 0)
         .map(|x| x)
         .collect::<Vec<_>>();
-    String::from_utf8(data).unwrap()
+    Ok(String::from_utf8(data).unwrap())
 }
 
-pub fn read_string(pid: i32, address: u64, count: usize) -> String {
+pub fn read_string(pid: Pid, address: usize, count: usize) -> nix::Result<String> {
     let mut data = vec![0u8; count];
-    read_data(pid, address, &mut data);
-    String::from_utf8(data).unwrap()
+    read_data(pid, address, &mut data)?;
+    Ok(String::from_utf8(data).unwrap())
 }
 
-pub fn read_data(pid: i32, address: u64, data: &mut [u8]) -> isize {
-    let local_iov = libc::iovec {
-        iov_base: data.as_mut_ptr() as *mut c_void,
-        iov_len: data.len(),
+pub fn read_data(pid: Pid, address: usize, data: &mut [u8]) -> nix::Result<usize> {
+    use nix::sys::uio::{IoVec, RemoteIoVec, process_vm_readv};
+
+    let len = data.len();
+    let local_iov = IoVec::from_mut_slice(data);
+    let remote_iov = RemoteIoVec {
+        base: address,
+        len,
     };
 
-    let remote_iov = libc::iovec {
-        iov_base: address as *mut c_void,
-        iov_len: data.len(),
-    };
-
-    unsafe { libc::process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0) }
+    process_vm_readv(pid, &[local_iov], &[remote_iov])
 }
-*/
 
 pub fn show_registers(regs: &nix::libc::user_regs_struct) {
     println!(
