@@ -141,15 +141,20 @@ impl Ptracer {
                     trace!("pc = {:#016x}", pc as usize);
 
                     if let Some(bp) = self.breakpoints.get(&pc) {
-                        if bp.enabled {
-                            // Reinsert breakpoint
-                            let pid = event.pid().unwrap();
-                            debug!("Single stepping @ {:#016x?} (PID={})", pc, pid);
-                            ptrace::step(pid, None)?;
-                            is_stopped = false;
+                        let pid = event.pid().unwrap();
 
-                            let thread_state = self.threads.get_mut(&pid).unwrap();
-                            *thread_state = ThreadState::SingleStepping(pc);
+                        if bp.enabled {
+                            if !is_breakpoint_enabled(pid, pc)? {
+                                // Reinsert breakpoint
+                                debug!("Single stepping @ {:#016x?} (PID={})", pc, pid);
+                                ptrace::step(pid, None)?;
+                                is_stopped = false;
+
+                                let thread_state = self.threads.get_mut(&pid).unwrap();
+                                *thread_state = ThreadState::SingleStepping(pc);
+                            } else {
+                                debug!("Hit enabled breakpoint @ {:#016x?} (PID={})", pc, pid);
+                            }
                         }
                     }
                 }
@@ -420,6 +425,12 @@ fn remove_breakpoint(pid: Pid, address: ptrace::AddressType, orig_data: u64) -> 
     let data = read(pid, address)? as u64;
     let new_data = (data & !0xff) | (orig_data & 0xff);
     write(pid, address, new_data as *mut c_void)
+}
+
+fn is_breakpoint_enabled(pid: Pid, address: ptrace::AddressType) -> nix::Result<bool> {
+    let data = read(pid, address)? as u64;
+    let enabled = (data & 0xff) == 0xcc;
+    Ok(enabled)
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
