@@ -3,7 +3,7 @@ use std::ffi::{c_void, CString};
 use std::fmt;
 use std::path::Path;
 
-use log::{debug, trace};
+use log::{debug, error, trace, warn};
 use nix::sys::ptrace;
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
@@ -206,7 +206,7 @@ impl Ptracer {
 
         let event = wait()?;
         self.event = event;
-        debug!("event: {:?}", event);
+        debug!("event = {:?}", event);
 
         let pid = match event {
             WaitStatus::StillAlive => return Ok(true),
@@ -236,6 +236,8 @@ impl Ptracer {
             WaitStatus::Stopped(_, _) => {
                 trace!("WaitStatus::Stopped");
                 let thread_state = self.threads.get_mut(&pid).unwrap();
+                trace!("thread_state = {:?}", thread_state);
+
                 match *thread_state {
                     ThreadState::SingleStepping(pc) => {
                         if let Some(bp) = self.breakpoints.get(&pc) {
@@ -244,7 +246,7 @@ impl Ptracer {
                                 insert_breakpoint(pid, pc)?;
                             }
                         } else {
-                            debug!("??? Breakpoint @ {:#016x?} not found", pc);
+                            error!("??? Breakpoint @ {:#016x?} not found", pc);
                             unreachable!();
                         }
 
@@ -275,11 +277,10 @@ impl Ptracer {
                             */
                             ptrace::setregs(pid, self.registers)?;
                         } else {
-                            debug!(
+                            warn!(
                                 "??? breakpoint not found (pc = {:#016x?})",
                                 self.registers.rip
                             );
-                            unreachable!();
                         }
                     }
 
@@ -289,7 +290,6 @@ impl Ptracer {
                 }
             }
             WaitStatus::PtraceEvent(_, _, pevent) => {
-                trace!("PtraceEvent = {:?}", pevent);
                 if pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
                     debug!("Process cloned with pid {}", pid);
                     self.threads.insert(pid, ThreadState::Running);
@@ -309,6 +309,7 @@ impl Ptracer {
                 }
             }
             WaitStatus::PtraceSyscall(_) => {
+                trace!("PtraceSyscall");
                 assert_eq!(ptrace_request, PtraceRequest::Syscall);
                 let thread_state = self.threads.get_mut(&pid).unwrap();
                 *thread_state = ThreadState::InSyscall;
@@ -316,7 +317,10 @@ impl Ptracer {
             WaitStatus::Continued(_) => {
                 trace!("WaitStatus::Continued");
             }
-            WaitStatus::StillAlive => return Ok(true),
+            WaitStatus::StillAlive => {
+                trace!("WaitStatus::StillAlive");
+                return Ok(true);
+            }
         };
 
         Ok(false)
