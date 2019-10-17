@@ -317,6 +317,7 @@ impl Ptracer {
                     || pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32
                 {
                     debug!("Process (v)forked with pid {}", pid);
+                    self.threads.insert(pid, ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
                     debug!("Process {} called exec", pid);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
@@ -324,7 +325,7 @@ impl Ptracer {
                 } else if pevent == ptrace::Event::PTRACE_EVENT_SECCOMP as i32 {
                     debug!("Process {} triggered seccomp", pid);
                 } else {
-                    debug!("Process {} triggered unknown ptrace event {}", pid, pevent);
+                    warn!("Process {} triggered unknown ptrace event {}", pid, pevent);
                 }
             }
             WaitStatus::PtraceSyscall(_) => {
