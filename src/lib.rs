@@ -310,14 +310,16 @@ impl Ptracer {
             }
             WaitStatus::PtraceEvent(_, _, pevent) => {
                 if pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
-                    debug!("Process cloned with pid {}", pid);
-                    self.threads.insert(pid, ThreadState::Running);
+                    let new_pid = ptrace::getevent(pid)?;
+                    debug!("Process cloned with pid {}", new_pid);
+                    self.threads.insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_FORK as i32
                     || pevent == ptrace::Event::PTRACE_EVENT_VFORK as i32
                     || pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32
                 {
-                    debug!("Process (v)forked with pid {}", pid);
-                    self.threads.insert(pid, ThreadState::Running);
+                    let new_pid = ptrace::getevent(pid)?;
+                    debug!("Process (v)forked with pid {}", new_pid);
+                    self.threads.insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
                     debug!("Process {} called exec", pid);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
