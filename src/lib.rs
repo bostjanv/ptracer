@@ -84,10 +84,10 @@ impl Ptracer {
         Ok(())
     }
 
-    pub fn disable_breakpoint(&mut self, address: ptrace::AddressType) -> nix::Result<()> {
-        if let Some(ref mut bp) = self.breakpoints.get_mut(&address) {
+    pub fn disable_breakpoint(&mut self, address: usize) -> nix::Result<()> {
+        if let Some(ref mut bp) = self.breakpoints.get_mut(&(address as ptrace::AddressType)) {
             if bp.enabled {
-                remove_breakpoint(self.pid, address, bp.data)?;
+                remove_breakpoint(self.pid, address as ptrace::AddressType, bp.data)?;
                 bp.enabled = false;
             }
         }
@@ -95,10 +95,10 @@ impl Ptracer {
         Ok(())
     }
 
-    pub fn remove_breakpoint(&mut self, address: ptrace::AddressType) -> nix::Result<()> {
-        if let Some(ref b) = self.breakpoints.get(&address) {
+    pub fn remove_breakpoint(&mut self, address: usize) -> nix::Result<()> {
+        if let Some(ref b) = self.breakpoints.get(&(address as ptrace::AddressType)) {
             debug!("Removing breakpoint {:#016x?}", address);
-            remove_breakpoint(self.pid, address, b.data)?;
+            remove_breakpoint(self.pid, address as ptrace::AddressType, b.data)?;
         }
 
         Ok(())
@@ -300,7 +300,7 @@ impl Ptracer {
                                 }
                             }
 
-                            ThreadState::InSyscall => {
+                            ThreadState::SyscallEnter | ThreadState::SyscallExit => {
                                 *thread_state = ThreadState::Running;
                             }
                         }
@@ -312,20 +312,26 @@ impl Ptracer {
                 if pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
                     let new_pid = ptrace::getevent(pid)?;
                     debug!("Process cloned with pid {}", new_pid);
-                    self.threads.insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
+                    self.threads
+                        .insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_FORK as i32
                     || pevent == ptrace::Event::PTRACE_EVENT_VFORK as i32
                     || pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32
                 {
                     let new_pid = ptrace::getevent(pid)?;
                     debug!("Process (v)forked with pid {}", new_pid);
-                    self.threads.insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
+                    self.threads
+                        .insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
                     debug!("Process {} called exec", pid);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
                     debug!("Process {} called exit", pid);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_SECCOMP as i32 {
                     debug!("Process {} triggered seccomp", pid);
+                    match self.threads.get_mut(&pid) {
+                        Some(thread_state) => *thread_state = ThreadState::SyscallExit,
+                        None => warn!("thread with pid {} not found", pid),
+                    }
                 } else {
                     warn!("Process {} triggered unknown ptrace event {}", pid, pevent);
                 }
@@ -334,7 +340,12 @@ impl Ptracer {
                 trace!("PtraceSyscall");
                 assert_eq!(ptrace_request, PtraceRequest::Syscall);
                 match self.threads.get_mut(&pid) {
-                    Some(thread_state) => *thread_state = ThreadState::InSyscall,
+                    Some(thread_state) => {
+                        *thread_state = match thread_state {
+                            ThreadState::SyscallEnter => ThreadState::SyscallExit,
+                            _ => ThreadState::SyscallEnter,
+                        }
+                    }
                     None => warn!("thread with pid {} not found", pid),
                 }
             }
@@ -479,5 +490,6 @@ pub enum ContinueMode {
 pub enum ThreadState {
     Running,
     SingleStepping(ptrace::AddressType),
-    InSyscall,
+    SyscallEnter,
+    SyscallExit,
 }

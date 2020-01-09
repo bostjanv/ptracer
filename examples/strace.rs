@@ -1,9 +1,17 @@
+use nix::{libc, sys::wait::WaitStatus, unistd::Pid};
 use ptracer::util;
-use ptracer::{ContinueMode, Ptracer, ThreadState, TraceeState};
+use ptracer::{ContinueMode, Ptracer, ThreadState};
 use std::env;
 use std::path::Path;
 
 fn main() {
+    env_logger::init();
+
+    if env::args().len() < 2 {
+        eprintln!("usage: {} PROGRAM [ARGS]", env::args().next().unwrap());
+        return;
+    }
+
     let args = env::args().skip(1).collect::<Vec<_>>();
     let path = Path::new(&args[0]);
     let ptracer = Ptracer::spawn(&path, &args[1..]);
@@ -15,31 +23,36 @@ fn main() {
     let mut ptracer = ptracer.unwrap();
 
     println!("PID: {}", ptracer.pid);
-    util::show_registers(&ptracer.gp_regs);
+    util::show_registers(&ptracer.registers);
     println!();
 
-    while let Ok(event) = ptracer.syscall(ContinueMode::Default) {
-        if event.tracee_state == TraceeState::Stopped && event.is_syscall {
-            let pid = event.pid;
-            let thread_state = *ptracer.threads.get(&pid).as_ref().unwrap();
-            if *thread_state == ThreadState::InSyscall {
-                let rax = ptracer.gp_regs.orig_rax as i64;
+    while let Ok(_) = ptracer.syscall(ContinueMode::Default) {
+        match ptracer.event() {
+            WaitStatus::PtraceSyscall(pid) => {
+                // only log syscall enter
+                if let Some(thread_state) = ptracer.threads.get(pid) {
+                    if *thread_state != ThreadState::SyscallEnter {
+                        continue;
+                    }
+                }
+
+                let rax = ptracer.registers.orig_rax as i64;
 
                 match rax {
-                    libc::SYS_write => handle_sys_write(&ptracer, pid),
+                    libc::SYS_write => handle_sys_write(&ptracer, *pid),
                     _ => {}
                 }
             }
+            _ => {}
         }
     }
 }
 
-fn handle_sys_write(ptracer: &Ptracer, pid: i32) {
-    let rsi = ptracer.gp_regs.rsi;
-    let rdx = ptracer.gp_regs.rdx;
-    let mut buf = util::read_string(pid, rsi, rdx as usize);
-    for r in &[('\n', "\\n"), ('\t', "\\t")] {
-        buf = buf.replace(r.0, r.1);
-    }
-    println!("sys_write: \"{}\"", buf);
+fn handle_sys_write(ptracer: &Ptracer, pid: Pid) {
+    let rsi = ptracer.registers.rsi;
+    let rdx = ptracer.registers.rdx;
+    println!(
+        "sys_write: {:?}",
+        util::read_string(pid, rsi as usize, rdx as usize)
+    );
 }
