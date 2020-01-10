@@ -27,7 +27,7 @@ impl Ptracer {
         let pid = spawn(path.to_str().unwrap(), args)?;
 
         let event = wait()?;
-        debug!("spawn: event: {:?}", event);
+        debug!("Process (PID={}) spawned: {:?}", pid, event);
         assert_eq!(event.pid(), Some(pid));
 
         ptrace::setoptions(
@@ -97,7 +97,7 @@ impl Ptracer {
 
     pub fn remove_breakpoint(&mut self, address: usize) -> nix::Result<()> {
         if let Some(ref b) = self.breakpoints.get(&(address as ptrace::AddressType)) {
-            debug!("Removing breakpoint {:#016x?}", address);
+            debug!("Removing breakpoint @ RIP={:016x}", address);
             remove_breakpoint(self.pid, address as ptrace::AddressType, b.data)?;
         }
 
@@ -138,13 +138,17 @@ impl Ptracer {
 
                 if signal == Signal::SIGTRAP {
                     let pc = self.registers.rip as ptrace::AddressType;
-                    trace!("pc = {:#016x}", pc as usize);
+                    trace!(
+                        "Thread (PID={}) received SIGTRAP @ RIP={:016x}",
+                        pid,
+                        pc as usize
+                    );
 
                     if let Some(bp) = self.breakpoints.get(&pc) {
                         if bp.enabled {
                             if !is_breakpoint_enabled(pid, pc)? {
                                 // Reinsert breakpoint
-                                debug!("Single stepping @ {:#016x?} (PID={})", pc, pid);
+                                debug!("Thread (PID={}) single stepping @ RIP={:016x?}", pid, pc);
                                 ptrace::step(pid, None)?;
                                 is_stopped = false;
 
@@ -152,10 +156,13 @@ impl Ptracer {
                                     Some(thread_state) => {
                                         *thread_state = ThreadState::SingleStepping(pc)
                                     }
-                                    None => warn!("thread with pid {} not found", pid),
+                                    None => warn!("Thread (PID={}) not found", pid),
                                 }
                             } else {
-                                debug!("Hit enabled breakpoint @ {:#016x?} (PID={})", pc, pid);
+                                debug!(
+                                    "Thread (PID={}) hit enabled breakpoint @ RIP={:016x?}",
+                                    pid, pc
+                                );
                             }
                         }
                     }
@@ -168,7 +175,7 @@ impl Ptracer {
             WaitStatus::Continued(_) => false,
             WaitStatus::StillAlive => false,
         };
-        trace!("is_stopped = {}", is_stopped);
+        trace!("Thread (PID={:?}) is_stopped={}", event.pid(), is_stopped);
 
         if is_stopped {
             // only `WaitStatus::StillAlive` has no pid, `.unwrap()` should be safe here
@@ -195,9 +202,9 @@ impl Ptracer {
             };
 
             trace!(
-                "ptrace_request = {:?}, pid = {}, signal = {:?}",
-                ptrace_request,
+                "Thread (PID={}) ptrace_request={:?}, continue signal={:?}",
                 pid,
+                ptrace_request,
                 signal
             );
             match ptrace_request {
@@ -209,57 +216,63 @@ impl Ptracer {
 
         let event = wait()?;
         self.event = event;
-        debug!("event = {:?}", event);
+        debug!(
+            "Thread (PID={:?}) received ptrace event={:?}",
+            event.pid(),
+            event
+        );
 
         let pid = match event {
             WaitStatus::StillAlive => return Ok(true),
             // only `WaitStatus::StillAlive` has no pid, `.unwrap()` should be safe here
             event => event.pid().unwrap(),
         };
-        trace!("pid = {:?}", pid);
 
         match event {
             WaitStatus::Stopped(_, _)
             | WaitStatus::PtraceEvent(_, _, _)
             | WaitStatus::PtraceSyscall(_) => {
                 self.registers = ptrace::getregs(pid)?;
-                trace!("self.registers = {:#016x?}", self.registers);
+                trace!("Thread (PID={}) registers={:#018x?}", pid, self.registers);
             }
             _ => {}
         }
 
         match event {
             WaitStatus::Exited(_, code) => {
-                debug!("Process {} exited with code {}", pid, code);
+                debug!("Thread (PID={}) exited with return code {}", pid, code);
                 match self.threads.remove(&pid) {
-                    None => warn!("failed to remove thread with pid {}", pid),
+                    None => warn!("Thread (PID={}) could not be removed", pid),
                     _ => {}
                 };
             }
             WaitStatus::Signaled(_, signal, _) => {
-                debug!("Process {} exited with signal {}", pid, signal);
+                debug!("Thread (PID={}) exited with signal {}", pid, signal);
                 match self.threads.remove(&pid) {
-                    None => warn!("failed to remove thread with pid {}", pid),
+                    None => warn!("Thread (PID={}) could not be removed", pid),
                     _ => {}
                 };
             }
             WaitStatus::Stopped(_, _) => {
-                trace!("WaitStatus::Stopped");
+                trace!("Thread (PID={}) processing WaitStatus::Stopped", pid);
                 match self.threads.get_mut(&pid) {
                     Some(thread_state) => {
-                        trace!("thread_state = {:?}", thread_state);
                         match *thread_state {
                             ThreadState::SingleStepping(pc) => {
+                                trace!("Thread (PID={}) single stepping @ RIP={:016x?}", pid, pc);
                                 if let Some(bp) = self.breakpoints.get(&pc) {
                                     if bp.enabled {
                                         debug!(
-                                            "Reinserting breakpoint @ {:#016x?} (PID={})",
-                                            pc, pid
+                                            "Thread (PID={}) reinserting breakpoint @ RIP={:016x?}",
+                                            pid, pc
                                         );
                                         insert_breakpoint(pid, pc)?;
                                     }
                                 } else {
-                                    error!("??? Breakpoint @ {:#016x?} not found", pc);
+                                    error!(
+                                        "Thread (PID={}) breakpoint @ RIP={:016x?} not found",
+                                        pid, pc
+                                    );
                                     unreachable!();
                                 }
 
@@ -273,12 +286,12 @@ impl Ptracer {
                             ThreadState::Running => {
                                 // Breakpoint reached
                                 let pc = (self.registers.rip - 1) as ptrace::AddressType;
-                                trace!("pc = {:#016x}", pc as usize);
+                                trace!("Thread (PID={}) running @ RIP={:016x?}", pid, pc);
 
                                 if let Some(bp) = self.breakpoints.get(&pc) {
                                     debug!(
-                                        "Removing breakpoint @ {:#016x?} (PID={})",
-                                        bp.address, pid
+                                        "Thread (PID={}) removing breakpoint @ RIP={:016x?}",
+                                        pid, bp.address
                                     );
                                     self.registers.rip = pc as u64;
 
@@ -294,24 +307,25 @@ impl Ptracer {
                                     ptrace::setregs(pid, self.registers)?;
                                 } else {
                                     warn!(
-                                        "??? breakpoint not found (pc = {:#016x?})",
-                                        self.registers.rip
+                                        "Thread (PID={}) breakpoint @ RIP={:016x?} not found",
+                                        pid, self.registers.rip
                                     );
                                 }
                             }
 
                             ThreadState::SyscallEnter | ThreadState::SyscallExit => {
+                                trace!("Thread (PID={}) state={:?}", pid, thread_state);
                                 *thread_state = ThreadState::Running;
                             }
                         }
                     }
-                    None => warn!("thread with pid {} not found", pid),
+                    None => warn!("Thread (PID={}) not found", pid),
                 }
             }
             WaitStatus::PtraceEvent(_, _, pevent) => {
                 if pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
                     let new_pid = ptrace::getevent(pid)?;
-                    debug!("Process cloned with pid {}", new_pid);
+                    debug!("Thread (PID={}) cloned (new PID={})", pid, new_pid);
                     self.threads
                         .insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_FORK as i32
@@ -319,25 +333,28 @@ impl Ptracer {
                     || pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32
                 {
                     let new_pid = ptrace::getevent(pid)?;
-                    debug!("Process (v)forked with pid {}", new_pid);
+                    debug!("Thread (PID={}) (v)forked with (new PID={})", pid, new_pid);
                     self.threads
                         .insert(Pid::from_raw(new_pid as i32), ThreadState::Running);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
-                    debug!("Process {} called exec", pid);
+                    debug!("Thread (PID={}) called exec", pid);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
-                    debug!("Process {} called exit", pid);
+                    debug!("Thread (PID={}) called exit", pid);
                 } else if pevent == ptrace::Event::PTRACE_EVENT_SECCOMP as i32 {
-                    debug!("Process {} triggered seccomp", pid);
+                    debug!("Thread (PID={}) triggered seccomp", pid);
                     match self.threads.get_mut(&pid) {
                         Some(thread_state) => *thread_state = ThreadState::SyscallExit,
-                        None => warn!("thread with pid {} not found", pid),
+                        None => warn!("Thread (PID={}) not found", pid),
                     }
                 } else {
-                    warn!("Process {} triggered unknown ptrace event {}", pid, pevent);
+                    warn!(
+                        "Thread (PID={}) received unknown ptrace event: {}",
+                        pid, pevent
+                    );
                 }
             }
             WaitStatus::PtraceSyscall(_) => {
-                trace!("PtraceSyscall");
+                trace!("Thread (PID={}) processing WaitStatus::PtraceSyscall", pid);
                 assert_eq!(ptrace_request, PtraceRequest::Syscall);
                 match self.threads.get_mut(&pid) {
                     Some(thread_state) => {
@@ -346,14 +363,14 @@ impl Ptracer {
                             _ => ThreadState::SyscallEnter,
                         }
                     }
-                    None => warn!("thread with pid {} not found", pid),
+                    None => warn!("Thread (PID={}) not found", pid),
                 }
             }
             WaitStatus::Continued(_) => {
-                trace!("WaitStatus::Continued");
+                trace!("Thread (PID={}) processing WaitStatus::Continued", pid);
             }
             WaitStatus::StillAlive => {
-                trace!("WaitStatus::StillAlive");
+                trace!("Thread (PID={}) processing WaitStatus::StillAlive", pid);
                 return Ok(true);
             }
         };
@@ -369,7 +386,7 @@ impl Ptracer {
 
         // Remove breakpoints
         for (address, breakpoint) in &self.breakpoints {
-            debug!("Removing breakpoint {:#016x?}", address);
+            debug!("Removing breakpoint @ RIP={:016x?}", address);
             remove_breakpoint(self.pid, *address, breakpoint.data)?;
         }
 

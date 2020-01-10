@@ -22,7 +22,7 @@ fn main() {
 
     let mut ptracer = ptracer.unwrap();
 
-    println!("PID: {}", ptracer.pid);
+    println!("Process (PID={}) spawned", ptracer.pid);
     util::show_registers(&ptracer.registers);
     println!();
 

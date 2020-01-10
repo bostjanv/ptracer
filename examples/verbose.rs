@@ -23,18 +23,20 @@ fn main() {
 
     let mut ptracer = ptracer.unwrap();
 
-    println!("PID: {}", ptracer.pid);
-    println!("RIP: 0x{:x}", ptracer.registers.rip);
+    println!(
+        "Process (PID={}) spawned @ RIP={:016x}",
+        ptracer.pid, ptracer.registers.rip
+    );
 
     let mmaps = util::read_memory_maps(ptracer.pid);
 
     let base_address = mmaps[0].offset;
-    println!("Base address: 0x{:x}", base_address);
+    println!("Base address: {:#018x}", base_address);
 
     let show_bytes = |address, size| {
         let mut data = vec![0 as u8; size];
         util::read_data(ptracer.pid, address, &mut data).unwrap();
-        print!("Memory @ 0x{:x}:", address);
+        print!("Memory @ {:#018x}:", address);
         for b in &data {
             print!(" {:02x}", b);
         }
@@ -64,7 +66,7 @@ fn main() {
     let event = ptracer.event();
     let pid = ptracer.pid;
     println!(
-        ">>>>> First breakpoint: RIP=0x{:x}, PID={}, Event={:?}",
+        ">>>>> First breakpoint: RIP={:#018x}, PID={}, Event={:?}",
         ptracer.registers.rip, pid, event
     );
 
@@ -77,37 +79,40 @@ fn main() {
 
         match ptracer.event() {
             WaitStatus::Exited(pid, code) => {
-                println!("Process {} exited with code {}", pid, code);
+                println!("Thread (PID={}) exited with return code {}", pid, code);
             }
             WaitStatus::Signaled(pid, signal, coredump) => {
                 println!(
-                    "Process {} exited with signal {}, cordump={:?}",
+                    "Thread (PID={}) exited with signal {}, cordump={:?}",
                     pid, signal, coredump
                 );
             }
             WaitStatus::Stopped(pid, signal) => {
-                println!("Process {} received signal {}", pid, signal);
+                println!("Thread (PID={}) received signal {}", pid, signal);
             }
             WaitStatus::PtraceEvent(pid, _, pevent) => {
                 if *pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
-                    println!("Process cloned");
+                    println!("Thread (PID={}) cloned", pid);
                 } else if *pevent == ptrace::Event::PTRACE_EVENT_FORK as i32
                     || *pevent == ptrace::Event::PTRACE_EVENT_VFORK as i32
                     || *pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32
                 {
-                    println!("Process (v)forked");
+                    println!("Thread (PID={}) (v)forked", pid);
                 } else if *pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
-                    println!("Process {} called exec", pid);
+                    println!("Thread (PID={}) called exec", pid);
                 } else if *pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
-                    println!("Process {} called exit", pid);
+                    println!("Thread (PID={}) called exit", pid);
                 } else if *pevent == ptrace::Event::PTRACE_EVENT_SECCOMP as i32 {
-                    println!("Process {} triggered seccomp", pid);
+                    println!("Thread (PID={}) triggered seccomp", pid);
                 } else {
-                    println!("Process {} triggered unknown ptrace event {}", pid, pevent);
+                    println!(
+                        "Thread (PID={}) received unknown ptrace event: {}",
+                        pid, pevent
+                    );
                 }
             }
             WaitStatus::PtraceSyscall(pid) => {
-                print!("Process {} PtraceSyscall ", pid);
+                print!("Thread (PID={}) PtraceSyscall ", pid);
 
                 if let Some(thread_state) = ptracer.threads.get(pid) {
                     match *thread_state {
@@ -126,10 +131,10 @@ fn main() {
                 );
             }
             WaitStatus::Continued(pid) => {
-                println!("Process {} WaitStatus::Continued", pid);
+                println!("Thread (PID={}) WaitStatus::Continued", pid);
             }
             WaitStatus::StillAlive => {
-                println!("WaitStatus::StillAlive");
+                println!("Thread WaitStatus::StillAlive");
             }
         }
     }
