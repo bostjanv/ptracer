@@ -35,10 +35,11 @@ impl Ptracer {
             ptrace::Options::PTRACE_O_EXITKILL
                 | ptrace::Options::PTRACE_O_TRACECLONE
                 | ptrace::Options::PTRACE_O_TRACEEXEC
+                | ptrace::Options::PTRACE_O_TRACEEXIT
                 | ptrace::Options::PTRACE_O_TRACEFORK
+                | ptrace::Options::PTRACE_O_TRACESYSGOOD
                 | ptrace::Options::PTRACE_O_TRACEVFORK
-                | ptrace::Options::PTRACE_O_TRACEVFORKDONE
-                | ptrace::Options::PTRACE_O_TRACESYSGOOD,
+                | ptrace::Options::PTRACE_O_TRACEVFORKDONE,
         )?;
 
         let registers = ptrace::getregs(pid)?;
