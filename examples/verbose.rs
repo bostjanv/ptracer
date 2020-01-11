@@ -1,8 +1,18 @@
-use ptracer::{util, ContinueMode, Ptracer, StopSignal, ThreadState, TraceeState, TrapEvent};
+use nix::{sys::ptrace, sys::wait::WaitStatus};
+use ptracer::{util, ContinueMode, Ptracer, ThreadState};
 use std::env;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 fn main() {
+    env_logger::init();
+
+    if env::args().len() < 2 {
+        eprintln!("usage: {} PROGRAM [ARGS]", env::args().next().unwrap());
+        return;
+    }
+
     let args = env::args().skip(1).collect::<Vec<_>>();
     let path = Path::new(&args[0]);
     let ptracer = Ptracer::spawn(&path, &args[1..]);
@@ -13,100 +23,121 @@ fn main() {
 
     let mut ptracer = ptracer.unwrap();
 
-    println!("PID: {}", ptracer.pid);
-    println!("RIP: 0x{:x}", ptracer.gp_regs.rip);
+    println!(
+        "Process (PID={}) spawned @ RIP={:016x}",
+        ptracer.pid, ptracer.registers.rip
+    );
 
     let mmaps = util::read_memory_maps(ptracer.pid);
 
     let base_address = mmaps[0].offset;
-    println!("Base address: 0x{:x}", base_address);
+    println!("Base address: {:#018x}", base_address);
 
     let show_bytes = |address, size| {
         let mut data = vec![0 as u8; size];
-        util::read_data(ptracer.pid, address, &mut data);
-        print!("Memory @ 0x{:x}:", address);
+        util::read_data(ptracer.pid, address, &mut data).unwrap();
+        print!("Memory @ {:#018x}:", address);
         for b in &data {
             print!(" {:02x}", b);
         }
         println!();
     };
 
-    let entry_offset = 0x5ae0;
+    let entry_offset = {
+        let mut fd = File::open(path).unwrap();
+        let mut buffer = Vec::new();
+        fd.read_to_end(&mut buffer).unwrap();
+        let binary = goblin::elf::Elf::parse(&buffer).unwrap();
+        binary.entry as usize
+    };
 
     show_bytes(base_address + entry_offset, 16);
 
     println!();
-    util::show_registers(&ptracer.gp_regs);
+    util::show_registers(&ptracer.registers);
     println!();
 
     // Break at entry point
-    ptracer.insert_breakpoint(base_address + entry_offset);
+    ptracer
+        .insert_breakpoint(base_address + entry_offset)
+        .unwrap();
 
-    let event = ptracer.cont(ContinueMode::Default).as_ref().unwrap();
-    let pid = event.pid;
-    assert_eq!(event.tracee_state, TraceeState::Stopped);
-    assert_eq!(event.trap_event, TrapEvent::None);
+    ptracer.cont(ContinueMode::Default).as_ref().unwrap();
+    let event = ptracer.event();
+    let pid = ptracer.pid;
     println!(
-        ">>>>> First breakpoint: RIP=0x{:x}, PID={}",
-        ptracer.gp_regs.rip, pid,
+        ">>>>> First breakpoint: RIP={:#018x}, PID={}, Event={:?}",
+        ptracer.registers.rip, pid, event
     );
 
-    ptracer.remove_breakpoint(base_address + entry_offset);
+    ptracer
+        .remove_breakpoint(base_address + entry_offset)
+        .unwrap();
 
-    while let Ok(event) = ptracer.syscall(ContinueMode::Default) {
+    while let Ok(_) = ptracer.syscall(ContinueMode::Default) {
         print!(">>>>> ");
-        let pid = event.pid;
 
-        match event.tracee_state {
-            TraceeState::Stopped => {
-                if !event.is_syscall {
-                    match event.trap_event {
-                        TrapEvent::None => match event.stop_signal {
-                            StopSignal::Stop => print!("Initial entry point"),
-                            StopSignal::Trap => print!("Breakpoint"),
-                            StopSignal::Term => print!("Received TERM signal"),
-                            StopSignal::Usr1 => print!("Received USR1 signal"),
-                            StopSignal::Int => print!("Received INT signal"),
-                            _ => unimplemented!(),
-                        },
-                        TrapEvent::Clone(pid) => print!("New thread (PID={})", pid),
-                        _ => unimplemented!(),
-                    }
-
-                    println!(": RIP=0x{:x}, PID={}", ptracer.gp_regs.rip, pid);
+        match ptracer.event() {
+            WaitStatus::Exited(pid, code) => {
+                println!("Thread (PID={}) exited with return code {}", pid, code);
+            }
+            WaitStatus::Signaled(pid, signal, coredump) => {
+                println!(
+                    "Thread (PID={}) exited with signal {}, cordump={:?}",
+                    pid, signal, coredump
+                );
+            }
+            WaitStatus::Stopped(pid, signal) => {
+                println!("Thread (PID={}) received signal {}", pid, signal);
+            }
+            WaitStatus::PtraceEvent(pid, _, pevent) => {
+                if *pevent == ptrace::Event::PTRACE_EVENT_CLONE as i32 {
+                    println!("Thread (PID={}) cloned", pid);
+                } else if *pevent == ptrace::Event::PTRACE_EVENT_FORK as i32
+                    || *pevent == ptrace::Event::PTRACE_EVENT_VFORK as i32
+                    || *pevent == ptrace::Event::PTRACE_EVENT_VFORK_DONE as i32
+                {
+                    println!("Thread (PID={}) (v)forked", pid);
+                } else if *pevent == ptrace::Event::PTRACE_EVENT_EXEC as i32 {
+                    println!("Thread (PID={}) called exec", pid);
+                } else if *pevent == ptrace::Event::PTRACE_EVENT_EXIT as i32 {
+                    println!("Thread (PID={}) called exit", pid);
+                } else if *pevent == ptrace::Event::PTRACE_EVENT_SECCOMP as i32 {
+                    println!("Thread (PID={}) triggered seccomp", pid);
                 } else {
-                    assert_eq!(event.trap_event, TrapEvent::None);
-
-                    let rax = match ptracer.threads.get(&pid).unwrap() {
-                        ThreadState::InSyscall => {
-                            print!("Syscall enter");
-                            ptracer.gp_regs.orig_rax
-                        }
-                        ThreadState::Running => {
-                            print!("Syscall leave");
-                            ptracer.gp_regs.rax
-                        }
-                        _ => unreachable!(),
-                    };
-
                     println!(
-                        ": RAX={}, RIP=0x{:x}, PID={}",
-                        rax, ptracer.gp_regs.rip, pid
+                        "Thread (PID={}) received unknown ptrace event: {}",
+                        pid, pevent
                     );
                 }
             }
+            WaitStatus::PtraceSyscall(pid) => {
+                print!("Thread (PID={}) PtraceSyscall ", pid);
 
-            TraceeState::Exited => {
-                println!("Exited: PID={}", pid);
+                if let Some(thread_state) = ptracer.threads.get(pid) {
+                    match *thread_state {
+                        ThreadState::SyscallEnter => print!("enter "),
+                        ThreadState::SyscallExit => print!("exit "),
+                        _ => {}
+                    }
+                }
+
+                let rip = ptracer.registers.rip;
+                let rax = ptracer.registers.rax;
+                let orig_rax = ptracer.registers.orig_rax;
+                println!(
+                    "RIP={:016x}, RAX={:016x}, ORIG_RAX={:016x}",
+                    rip, rax, orig_rax
+                );
             }
-
-            TraceeState::Signaled => {
-                println!("Signaled: PID={}", pid);
+            WaitStatus::Continued(pid) => {
+                println!("Thread (PID={}) WaitStatus::Continued", pid);
             }
-
-            _ => unimplemented!(),
+            WaitStatus::StillAlive => {
+                println!("Thread WaitStatus::StillAlive");
+            }
         }
     }
 
-    ptracer.detach();
+    ptracer.detach().unwrap();
 }

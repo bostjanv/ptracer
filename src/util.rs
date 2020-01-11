@@ -1,45 +1,37 @@
-use libc::c_void;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 
-pub fn read_string_max_size(pid: i32, address: u64, max_size: usize) -> String {
+use crate::Pid;
+
+pub fn read_string_max_size(pid: Pid, address: usize, max_size: usize) -> nix::Result<String> {
     let mut data = vec![0u8; max_size];
-    read_data(pid, address, &mut data);
+    read_data(pid, address, &mut data)?;
     let data = data
         .into_iter()
         .take_while(|x| *x != 0)
         .map(|x| x)
         .collect::<Vec<_>>();
-    String::from_utf8(data).unwrap()
+    Ok(String::from_utf8(data).unwrap())
 }
 
-pub fn read_string(pid: i32, address: u64, count: usize) -> String {
+pub fn read_string(pid: Pid, address: usize, count: usize) -> nix::Result<String> {
     let mut data = vec![0u8; count];
-    read_data(pid, address, &mut data);
-    String::from_utf8(data).unwrap()
+    read_data(pid, address, &mut data)?;
+    Ok(String::from_utf8(data).unwrap())
 }
 
-pub fn kill(pid: i32, signo: i32) {
-    let result = unsafe { libc::kill(pid, signo) };
-    assert_eq!(result, 0);
+pub fn read_data(pid: Pid, address: usize, data: &mut [u8]) -> nix::Result<usize> {
+    use nix::sys::uio::{process_vm_readv, IoVec, RemoteIoVec};
+
+    let len = data.len();
+    let local_iov = IoVec::from_mut_slice(data);
+    let remote_iov = RemoteIoVec { base: address, len };
+
+    process_vm_readv(pid, &[local_iov], &[remote_iov])
 }
 
-pub fn read_data(pid: i32, address: u64, data: &mut [u8]) -> isize {
-    let local_iov = libc::iovec {
-        iov_base: data.as_mut_ptr() as *mut c_void,
-        iov_len: data.len(),
-    };
-
-    let remote_iov = libc::iovec {
-        iov_base: address as *mut c_void,
-        iov_len: data.len(),
-    };
-
-    unsafe { libc::process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0) }
-}
-
-pub fn show_registers(regs: &libc::user_regs_struct) {
+pub fn show_registers(regs: &nix::libc::user_regs_struct) {
     println!(
         "R15      {:016x}    R14     {:016x}    R13    {:016x}",
         regs.r15, regs.r14, regs.r13
@@ -79,14 +71,14 @@ pub fn show_registers(regs: &libc::user_regs_struct) {
 }
 
 pub struct MemoryMap {
-    pub offset: u64,
-    pub size: u64,
-    pub file_offset: u64,
+    pub offset: usize,
+    pub size: usize,
+    pub file_offset: usize,
     pub perm: String, // TODO: rwx
     pub path: String,
 }
 
-pub fn read_memory_maps(pid: libc::pid_t) -> Vec<MemoryMap> {
+pub fn read_memory_maps(pid: Pid) -> Vec<MemoryMap> {
     let path = format!("/proc/{}/maps", pid);
     let mut maps = Vec::new();
 
@@ -100,16 +92,16 @@ pub fn read_memory_maps(pid: libc::pid_t) -> Vec<MemoryMap> {
         assert!(v.len() == 5 || v.len() == 6);
 
         if v.len() == 6 {
-            let addr: Vec<u64> = v[0]
+            let addr: Vec<usize> = v[0]
                 .split('-')
-                .map(|x| u64::from_str_radix(x, 16).unwrap())
+                .map(|x| usize::from_str_radix(x, 16).unwrap())
                 .collect();
             assert_eq!(addr.len(), 2);
 
             let map = MemoryMap {
                 offset: addr[0],
                 size: addr[1] - addr[0],
-                file_offset: u64::from_str_radix(v[2], 16).unwrap(),
+                file_offset: usize::from_str_radix(v[2], 16).unwrap(),
                 perm: v[1].to_owned(),
                 path: v[5].to_owned(),
             };
