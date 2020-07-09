@@ -26,18 +26,18 @@ fn main() {
 
     println!(
         "Process (PID={}) spawned @ RIP={:016x}",
-        ptracer.pid,
-        ptracer.registers.rip()
+        ptracer.pid(),
+        ptracer.registers().rip()
     );
 
-    let mmaps = util::get_memory_maps(ptracer.pid).unwrap();
+    let mmaps = util::get_memory_maps(ptracer.pid()).unwrap();
 
     let base_address = mmaps[0].start as usize;
     println!("Base address: {:#018x}", base_address);
 
     let show_bytes = |address, size| {
         let mut data = vec![0 as u8; size];
-        util::read_data(ptracer.pid, address, &mut data).unwrap();
+        util::read_data(ptracer.pid(), address, &mut data).unwrap();
         print!("Memory @ {:#018x}:", address);
         for b in &data {
             print!(" {:02x}", b);
@@ -56,7 +56,7 @@ fn main() {
     show_bytes(base_address + entry_offset, 16);
 
     println!();
-    util::show_registers(&ptracer.registers);
+    util::show_registers(ptracer.registers());
     println!();
 
     // Break at entry point
@@ -66,10 +66,10 @@ fn main() {
 
     ptracer.cont(ContinueMode::Default).as_ref().unwrap();
     let event = ptracer.event();
-    let pid = ptracer.pid;
+    let pid = ptracer.pid();
     println!(
         ">>>>> First breakpoint: RIP={:#018x}, PID={}, Event={:?}",
-        ptracer.registers.rip(),
+        ptracer.registers().rip(),
         pid,
         event
     );
@@ -123,7 +123,7 @@ fn main() {
                 use ptracer::ThreadState;
                 print!("Thread (PID={}) PtraceSyscall ", pid);
 
-                if let Some(thread_state) = ptracer.threads.get(pid) {
+                if let Some(thread_state) = ptracer.threads().get(pid) {
                     match *thread_state {
                         ThreadState::SyscallEnter => print!("enter "),
                         ThreadState::SyscallExit => print!("exit "),
@@ -131,9 +131,9 @@ fn main() {
                     }
                 }
 
-                let rip = ptracer.registers.rip;
-                let rax = ptracer.registers.rax;
-                let orig_rax = ptracer.registers.orig_rax;
+                let rip = ptracer.registers().rip();
+                let rax = ptracer.registers().rax();
+                let orig_rax = ptracer.registers().orig_rax;
                 println!(
                     "RIP={:016x}, RAX={:016x}, ORIG_RAX={:016x}",
                     rip, rax, orig_rax

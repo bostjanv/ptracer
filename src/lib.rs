@@ -1,3 +1,13 @@
+//! A debugger library utilizing `ptrace`-syscall.  
+//!
+//! Supported platforms: linux x86_64 and freebsd x86_64.  
+//! *WARNING*: Only one concurrent instance of `Ptracer` is currently supported!  
+//!
+//! This library is still in early development.  
+//! There may still be edge cases where things will break.  
+//!
+//! See examples for possible usage.
+
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt;
@@ -13,28 +23,38 @@ pub mod util;
 cfg_if::cfg_if! {
     if #[cfg(any(target_os = "android", target_os = "linux"))] {
         mod linux;
-        pub use nix::sys::ptrace::{write, getevent, getregs, getsiginfo, read, setregs, setsiginfo, syscall};
+        use nix::sys::ptrace::syscall;
+        pub use nix::sys::ptrace::{write, getevent, getregs, getsiginfo, read, setregs, setsiginfo};
         pub use linux::{PtraceRegisters, PtraceData};
         pub use procfs;
 
         const ADDR_NO_RANDOMIZE: nix::libc::c_ulong = 0x0040000;
     } else if #[cfg(target_os = "freebsd")] {
         mod freebsd;
-        pub use nix::sys::ptrace::write;
-        pub use freebsd::{getregs, read, setregs, syscall};
+        pub use nix::sys::ptrace::{syscall, write};
+        pub use freebsd::{getregs, read, setregs};
         pub use freebsd::{PtraceRegisters, PtraceData};
     }
 }
 
+/// Ptrace wraps `ptrace` syscalls to enable writing an debugger.
+///
+/// *WARNING*: Only one concurrent instance is currently supported!
 pub struct Ptracer {
-    pub pid: Pid,
-    pub registers: PtraceRegisters,
-    pub threads: HashMap<Pid, ThreadState>,
+    pid: Pid,
+    registers: PtraceRegisters,
+    threads: HashMap<Pid, ThreadState>,
     event: WaitStatus,
     breakpoints: HashMap<ptrace::AddressType, Breakpoint>,
 }
 
 impl Ptracer {
+    /// Spawn a new debugee.
+    ///
+    /// Set ptrace options for exec/fork/exit variants.  
+    /// Disable ASLR (linux only).  
+    ///
+    /// *WARNING*: Only one concurrent instance is currently supported!
     pub fn spawn(path: &Path, args: &[String]) -> nix::Result<Self> {
         let pid = spawn(path.to_str().unwrap(), args)?;
 
@@ -68,6 +88,9 @@ impl Ptracer {
         })
     }
 
+    /// Insert a new breakpoint.
+    ///
+    /// If breakpoint exists, do nothing.
     pub fn insert_breakpoint(&mut self, address: usize) -> nix::Result<()> {
         if !self
             .breakpoints
@@ -86,6 +109,10 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Enable a breakpoint.
+    ///
+    /// If breakpoint does not exists, do nothing.  
+    /// If breakpoint is enabled, do nothing.
     pub fn enable_breakpoint(&mut self, address: usize) -> nix::Result<()> {
         if let Some(ref mut bp) = self.breakpoints.get_mut(&(address as ptrace::AddressType)) {
             if !bp.enabled {
@@ -97,6 +124,10 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Disable a breakpoint.
+    ///
+    /// If breakpoint does not exists, do nothing.  
+    /// If breakpoint is disabled, do nothing.
     pub fn disable_breakpoint(&mut self, address: usize) -> nix::Result<()> {
         if let Some(ref mut bp) = self.breakpoints.get_mut(&(address as ptrace::AddressType)) {
             if bp.enabled {
@@ -108,6 +139,9 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Remove a breakpoint.
+    ///
+    /// If breakpoint does not exists, do nothing.
     pub fn remove_breakpoint(&mut self, address: usize) -> nix::Result<()> {
         if let Some(ref b) = self.breakpoints.get(&(address as ptrace::AddressType)) {
             debug!("Removing breakpoint @ RIP={:016x}", address);
@@ -117,6 +151,7 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Continue debugee, see `cont_aux` for details.
     pub fn cont(&mut self, how: ContinueMode) -> nix::Result<()> {
         if self.cont_aux(how, PtraceRequest::Cont)? {
             while self.cont_aux(ContinueMode::Default, PtraceRequest::Cont)? {}
@@ -125,6 +160,7 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Singlestep debugee, see `cont_aux` for details.
     pub fn step(&mut self, how: ContinueMode) -> nix::Result<()> {
         if self.cont_aux(how, PtraceRequest::Step)? {
             while self.cont_aux(ContinueMode::Default, PtraceRequest::Step)? {}
@@ -133,6 +169,7 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Run until syscall, see `cont_aux` for details.
     pub fn syscall(&mut self, how: ContinueMode) -> nix::Result<()> {
         if self.cont_aux(how, PtraceRequest::Syscall)? {
             while self.cont_aux(ContinueMode::Default, PtraceRequest::Syscall)? {}
@@ -141,6 +178,9 @@ impl Ptracer {
         Ok(())
     }
 
+    /// Handle the `ptrace_request` with given `ContinueMode`.
+    ///
+    /// Returns `true` when more `ptrace` events need to be handled.
     fn cont_aux(&mut self, how: ContinueMode, ptrace_request: PtraceRequest) -> nix::Result<bool> {
         let event = self.event;
         let is_stopped = match event {
@@ -400,6 +440,9 @@ impl Ptracer {
         Ok(false)
     }
 
+    /// Detach from debugee.
+    ///
+    /// All breakpoints are removed before detach.
     pub fn detach(&self, signal: Option<Signal>) -> nix::Result<()> {
         match self.event {
             WaitStatus::Exited(_, _) => return Ok(()),
@@ -415,10 +458,27 @@ impl Ptracer {
         ptrace::detach(self.pid, signal)
     }
 
+    /// Return the debugee pid.
+    pub fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    /// Return the latest register state.
+    pub fn registers(&self) -> &PtraceRegisters {
+        &self.registers
+    }
+
+    /// Return the debugee threads.
+    pub fn threads(&self) -> &HashMap<Pid, ThreadState> {
+        &self.threads
+    }
+
+    /// Return the latest event.
     pub fn event(&self) -> &WaitStatus {
         &self.event
     }
 
+    /// Return all breakpoints.
     pub fn breakpoints(&self) -> &HashMap<ptrace::AddressType, Breakpoint> {
         &self.breakpoints
     }
@@ -436,6 +496,9 @@ impl fmt::Debug for Ptracer {
     }
 }
 
+/// Spawn a new process.
+///
+/// Disable ASLR (linux only).
 fn spawn(path: &str, args: &[String]) -> nix::Result<Pid> {
     #[cfg(any(target_os = "android", target_os = "linux"))]
     use nix::libc::personality;
@@ -465,6 +528,7 @@ fn spawn(path: &str, args: &[String]) -> nix::Result<Pid> {
     }
 }
 
+/// Wait for (any) child
 fn wait() -> nix::Result<WaitStatus> {
     use nix::sys::wait::{waitpid, WaitPidFlag};
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "redox"))]
@@ -474,17 +538,23 @@ fn wait() -> nix::Result<WaitStatus> {
     return waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WUNTRACED));
 }
 
+/// Breakpoint
 pub struct Breakpoint {
+    /// Address
     address: ptrace::AddressType,
+    /// Original data
     data: PtraceData,
+    /// Enabled
     enabled: bool,
 }
 
 impl Breakpoint {
+    /// Address of breakpoint
     pub fn address(&self) -> usize {
         self.address as usize
     }
 
+    /// Breakpoint enabled status
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -499,6 +569,7 @@ impl fmt::Debug for Breakpoint {
     }
 }
 
+/// Insert `int3` instruction
 fn insert_breakpoint(pid: Pid, address: ptrace::AddressType) -> nix::Result<PtraceData> {
     let data = read(pid, address)? as PtraceData;
     let new_data = (data & !0xff) | 0xcc;
@@ -506,6 +577,7 @@ fn insert_breakpoint(pid: Pid, address: ptrace::AddressType) -> nix::Result<Ptra
     Ok(data)
 }
 
+/// Restore original byte
 fn remove_breakpoint(
     pid: Pid,
     address: ptrace::AddressType,
@@ -516,34 +588,54 @@ fn remove_breakpoint(
     write(pid, address, new_data as _)
 }
 
+/// Check if `int3` instruction is present
 fn is_breakpoint_enabled(pid: Pid, address: ptrace::AddressType) -> nix::Result<bool> {
     let data = read(pid, address)? as u64;
     let enabled = (data & 0xff) == 0xcc;
     Ok(enabled)
 }
 
+/// Ptrace request
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum PtraceRequest {
+    /// Continue
     Cont,
+    /// Singlestep
     Step,
+    /// Syscall
     Syscall,
 }
 
+/// Debugee continue mode
 #[derive(Debug)]
 pub enum ContinueMode {
+    /// Received signals will be forwarded to debugee, except `SIGTRAP` and `SIGSTOP`.
     Default,
+    /// Don't forward any signal to debugee.
     NoSignal,
+    /// Send given signal to debugee.
     WithSignal(Signal),
 }
 
+/// Thread state
 #[derive(Debug, PartialEq)]
 pub enum ThreadState {
+    /// Thread is currently running.
     Running,
+    /// Thread is currently single stepping on `pc`.
+    ///
+    /// This is used to temporarily remove breakpoints and execute the instruction at the breakpoint.
     SingleStepping(ptrace::AddressType),
+    /// Thread is entering a syscall
     SyscallEnter,
+    /// Thread has exited a syscall
     SyscallExit,
 }
 
+/// Abstraction trait for x86_64 registers.
+///
+/// Platforms differ in naming and availablity of registers.
+/// This trait is implemented on register structs to unify them.
 pub trait Registers {
     fn r15(&self) -> u64;
     fn r14(&self) -> u64;

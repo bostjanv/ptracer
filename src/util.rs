@@ -2,45 +2,71 @@ use crate::{Pid, Registers};
 use std::path::PathBuf;
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
-pub use crate::linux::{get_memory_maps, read_data};
+pub use crate::linux::{get_memory_maps, read_data, write_data};
 
 #[cfg(target_os = "freebsd")]
-pub use crate::freebsd::{get_memory_maps, read_data};
+pub use crate::freebsd::{get_memory_maps, read_data, write_data};
 
+/// Memory mapping
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MemoryMap {
+    /// Start address of mapping
     pub start: u64,
+    /// End address of mapping (inclusive)
     pub end: u64,
+    /// Offset within mapped module (`filepath`)
     pub offset: u64,
+    /// Permission
     pub permissions: Permissions,
+    /// Path of mapped module
     pub filepath: Option<PathBuf>,
 }
 
+impl MemoryMap {
+    /// Check if a given address is within the memory mapping.
+    pub fn contains(&self, address: u64) -> bool {
+        address >= self.start && address <= self.end
+    }
+}
+
+/// Memory map permissions.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Permissions {
+    /// Readable
     pub read: bool,
+    /// Writeable
     pub write: bool,
+    /// Executable
     pub execute: bool,
+    /// Copy on write
     pub copy: bool,
 }
 
+/// Read a null-terminated UTF-8 string with a length up to `max_size`.
+///
+/// This will read exactly `max_size` bytes starting at `address` from the specified process.  
+/// Read bytes up to first `0` are converted with `String::from_utf8`.  
+///
+/// Function will **panic** on invalid UTF-8 string.
 pub fn read_string_max_size(pid: Pid, address: usize, max_size: usize) -> nix::Result<String> {
     let mut data = vec![0u8; max_size];
     read_data(pid, address, &mut data)?;
-    let data = data
-        .into_iter()
-        .take_while(|x| *x != 0)
-        .map(|x| x)
-        .collect::<Vec<_>>();
+    let len = data.iter().position(|x| *x == 0).unwrap_or(max_size);
+    data.truncate(len);
     Ok(String::from_utf8(data).unwrap())
 }
 
+/// Read a `count` bytes long UTF-8 string from specified process at `address`.
+///
+/// Read bytes are converted with `String::from_utf8`.  
+/// Function will **panic** on invalid UTF-8 string.
 pub fn read_string(pid: Pid, address: usize, count: usize) -> nix::Result<String> {
     let mut data = vec![0u8; count];
     read_data(pid, address, &mut data)?;
     Ok(String::from_utf8(data).unwrap())
 }
 
+/// Print registers
 pub fn show_registers<R: Registers>(regs: &R) {
     println!(
         "R15      {:016x}    R14     {:016x}    R13    {:016x}",
