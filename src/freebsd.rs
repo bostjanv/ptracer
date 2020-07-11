@@ -14,6 +14,7 @@ pub type PtraceData = u32;
 pub type PtraceRegisters = reg;
 
 const PIOD_READ_D: c_int = 1;
+const PIOD_WRITE_D: c_int = 2;
 
 impl Registers for reg {
     #[inline]
