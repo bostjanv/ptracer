@@ -6,20 +6,19 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-fn main() {
+fn main() -> nix::Result<()> {
     env_logger::init();
 
     if env::args().len() < 2 {
         eprintln!("usage: {} PROGRAM [ARGS]", env::args().next().unwrap());
-        return;
+        return Ok(());
     }
 
     let args = env::args().skip(1).collect::<Vec<_>>();
     let path = Path::new(&args[0]);
     let ptracer = Ptracer::spawn(&path, &args[1..]);
     if let Err(err) = ptracer {
-        eprintln!("Error: {}", err);
-        return;
+        return Err(err);
     }
 
     let mut ptracer = ptracer.unwrap();
@@ -148,5 +147,5 @@ fn main() {
         }
     }
 
-    ptracer.detach(None).unwrap();
+    ptracer.detach(None)
 }
