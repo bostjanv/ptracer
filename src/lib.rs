@@ -31,7 +31,8 @@ cfg_if::cfg_if! {
         const ADDR_NO_RANDOMIZE: nix::libc::c_ulong = 0x0040000;
     } else if #[cfg(target_os = "freebsd")] {
         mod freebsd;
-        pub use nix::sys::ptrace::{syscall, write};
+        use freebsd::syscall;
+        pub use nix::sys::ptrace::write;
         pub use freebsd::{getregs, read, setregs};
         pub use freebsd::{PtraceRegisters, PtraceData};
     }
