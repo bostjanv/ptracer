@@ -13,7 +13,7 @@ license = "MIT"
 
 [dependencies]
 libc = "^0.2.72"
-nix = "^0.17"
+nix = "^0.23"
 cfg-if = "^0.1"
 log = "^0.4"
 

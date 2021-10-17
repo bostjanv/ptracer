@@ -514,7 +514,7 @@ fn spawn(path: &str, args: &[String]) -> nix::Result<Pid> {
     let mut args = args.iter().map(|arg| arg.as_c_str()).collect::<Vec<_>>();
     args.insert(0, path.as_c_str());
 
-    match fork() {
+    match unsafe { fork() } {
         Ok(ForkResult::Parent { child, .. }) => Ok(child),
         Ok(ForkResult::Child) => {
             ptrace::traceme()?;
@@ -574,7 +574,9 @@ impl fmt::Debug for Breakpoint {
 fn insert_breakpoint(pid: Pid, address: ptrace::AddressType) -> nix::Result<PtraceData> {
     let data = read(pid, address)? as PtraceData;
     let new_data = (data & !0xff) | 0xcc;
-    write(pid, address, new_data as _)?;
+    unsafe {
+        write(pid, address, new_data as _)?;
+    }
     Ok(data)
 }
 
@@ -586,7 +588,7 @@ fn remove_breakpoint(
 ) -> nix::Result<()> {
     let data = read(pid, address)? as PtraceData;
     let new_data = (data & !0xff) | (orig_data & 0xff);
-    write(pid, address, new_data as _)
+    unsafe { write(pid, address, new_data as _) }
 }
 
 /// Check if `int3` instruction is present
